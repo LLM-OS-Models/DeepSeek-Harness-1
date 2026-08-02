@@ -17,7 +17,6 @@ except Exception:
     pass
 import chromadb
 import structlog
-import tinker
 from openai import OpenAI
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -69,7 +68,6 @@ class Config(BaseSettings):
     chroma_api_key: SecretStr
     chroma_database: str
     huggingface_token: SecretStr
-    tinker_api_key: SecretStr
     browsecompplus_qrels_gold_path: str
     browsecompplus_qrels_evidence_path: str
     browsecompplus_queries_path: str
@@ -98,9 +96,6 @@ class Config(BaseSettings):
             base_url="https://api.moonshot.ai/v1",
         )
 
-    def get_tinker_service_client(self) -> tinker.ServiceClient:
-        return tinker.ServiceClient(api_key=self.tinker_api_key.get_secret_value())
-
     def get_baseten_client(self) -> PerformanceClient:
         return PerformanceClient(
             base_url=self.baseten_model_url,
@@ -117,8 +112,6 @@ def get_config() -> Config:
     if config.huggingface_token:
         # Populate this here since HF libraries are cumbersome to configure otherwise
         os.environ["HF_TOKEN"] = config.huggingface_token.get_secret_value()
-    if config.tinker_api_key:
-        os.environ["TINKER_API_KEY"] = config.tinker_api_key.get_secret_value()
     if config.jina_api_key:
         os.environ["CHROMA_JINA_API_KEY"] = config.jina_api_key.get_secret_value()
     return config

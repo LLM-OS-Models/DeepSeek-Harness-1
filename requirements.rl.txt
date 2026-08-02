@@ -1,0 +1,20 @@
+# RL extras — `uv sync`가 base harness 의존성을 푼 다음에 설치.
+#
+# 왜 별도 파일인가: verl과 vllm이 torch/torchvision/numpy/transformers
+# 메이저를 서로 다르게 pin해서, pyproject.toml의
+# `[project.dependencies]`에 넣으면 `uv lock`이 풀리지 않는다.
+# 그래서 sync 후에 --no-deps로 설치해서 base torch(2.11.0+cu130)를
+# 보존하고, 그 후에 runtime deps를 별도로 설치한다.
+#
+# 설치 순서:
+#   uv sync
+#   uv pip install --no-deps -r requirements.rl.txt
+#   uv pip install -r requirements.rl.runtime.txt
+#
+# 아래 버전은 2026-08-02에 smoke_test를 통과한 조합.
+# Python 3.12.3 / torch 2.11.0+cu130 / nvidia-nccl-cu12 2.29.7.
+
+verl==0.8.0
+vllm==0.14.0
+deepspeed==0.19.3
+ray==2.56.1
