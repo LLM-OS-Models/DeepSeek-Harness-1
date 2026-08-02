@@ -45,9 +45,11 @@ class ModelConfig:
     )
     tokenizer_path: Optional[str] = None
 
-    # FP8 quantization for the rollout (vLLM) side. Training side uses BF16
-    # for stable backprop; FP8 weights are loaded into vLLM for fast rollout.
-    rollout_dtype: str = "fp8"
+    # vLLM compute dtype. "auto" lets vLLM read dtype from the model
+    # config.json; DeepSeek-V4-Flash ships with quantization_config.quant_method
+    # = "fp8" + expert_dtype = "fp4", so vLLM applies FP8/FP4 automatically.
+    # NOTE: vLLM 0.25 rejects dtype="fp8" — FP8 is a quantization, not a dtype.
+    rollout_dtype: str = "auto"
     train_dtype: str = "bfloat16"
 
     # vLLM rollout engine settings

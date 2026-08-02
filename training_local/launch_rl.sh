@@ -28,6 +28,13 @@ cd "$REPO_ROOT"
 # ABI for C-extension packages (numpy, torch).
 unset PYTHONPATH
 
+# vLLM 0.25 defaults VLLM_USE_FLASHINFER_SAMPLER=True but flashinfer wheels
+# for torch 2.11 don't exist yet. Fall back to native sampler.
+export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
+# vLLM import chain touches CUDA before forking TP workers; spawn avoids
+# "Cannot re-initialize CUDA in forked subprocess".
+export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
+
 # Load .env.local if present
 if [[ -f .env.local ]]; then
   set -a
@@ -86,5 +93,8 @@ echo "  rollout TP  : ${ROLLOUT_TP_SIZE}"
 echo "  output      : ${OUTPUT_DIR}/${RUN_NAME}"
 echo "  smoke       : ${SMOKE_TEST:-0}"
 echo "============================================================"
+
+# Re-apply vLLM patches (NamespaceTool alias etc.) in case venv was reinstalled.
+uv run --no-sync python -m training_local.patch_vllm || true
 
 uv run python -m training_local.train_rl --backend "${BACKEND}" "$@"

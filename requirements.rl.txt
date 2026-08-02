@@ -1,20 +1,24 @@
 # RL extras — `uv sync`가 base harness 의존성을 푼 다음에 설치.
 #
-# 왜 별도 파일인가: verl과 vllm이 torch/torchvision/numpy/transformers
-# 메이저를 서로 다르게 pin해서, pyproject.toml의
-# `[project.dependencies]`에 넣으면 `uv lock`이 풀리지 않는다.
-# 그래서 sync 후에 --no-deps로 설치해서 base torch(2.11.0+cu130)를
-# 보존하고, 그 후에 runtime deps를 별도로 설치한다.
+# 왜 별도 파일인가: vllm은 CUDA-specific wheel을 배포하는데, PyPI 기본
+# wheel(0.25.0)은 cu130 빌드라 driver 570.86.10(CUDA 12.9)에서 동작하지
+# 않는다. 그래서 GitHub release의 cu129 wheel을 직접 받아서 --no-deps로
+# 설치한다. verl/deepspeed/ray는 일반 PyPI wheel.
 #
 # 설치 순서:
 #   uv sync
 #   uv pip install --no-deps -r requirements.rl.txt
 #   uv pip install -r requirements.rl.runtime.txt
 #
-# 아래 버전은 2026-08-02에 smoke_test를 통과한 조합.
-# Python 3.12.3 / torch 2.11.0+cu130 / nvidia-nccl-cu12 2.29.7.
+# 아래 버전은 2026-08-02에 smoke_test + GPU 6,7 롤아웃 검증을 통과한 조합.
+# Python 3.12.3 / torch 2.11.0+cu128 / transformers 5.14.1 / vllm 0.25.0+cu129.
 
 verl==0.8.0
-vllm==0.14.0
 deepspeed==0.19.3
 ray==2.56.1
+
+# vLLM cu129 wheel (GitHub release). PyPI 기본 wheel은 cu130 빌드라
+# driver 570/CUDA 12.9에서 kernel init에 실패함. --no-deps는 커맨드라인에서
+# 줘야 함: uv pip install --no-deps -r requirements.rl.txt
+https://github.com/vllm-project/vllm/releases/download/v0.25.0/vllm-0.25.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl
+

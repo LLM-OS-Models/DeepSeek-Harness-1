@@ -13,6 +13,10 @@ cd "$REPO_ROOT"
 # Clear PYTHONPATH to avoid host system site-packages contaminating the venv.
 unset PYTHONPATH
 
+# Same vLLM env hardening as launch_rl.sh — see that file for rationale.
+export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
+export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
+
 if [[ -f .env.local ]]; then
   set -a
   source .env.local
@@ -34,5 +38,8 @@ echo "  model       : ${HARNESS1_MODEL_PATH}"
 echo "  data dir    : ${SFT_DATA_DIR}"
 echo "  output      : ${SFT_OUTPUT_DIR}/${SFT_RUN_NAME}"
 echo "============================================================"
+
+# Re-apply vLLM patches in case venv was reinstalled.
+uv run --no-sync python -m training_local.patch_vllm || true
 
 uv run python -m training_local.train_sft "$@"

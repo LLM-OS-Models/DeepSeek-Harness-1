@@ -21,3 +21,6 @@ wandb/
 !assets/teaser_recall_barchart.png
 model_export/merged_model/
 model_export/adapter/
+
+# Claude Code session state
+.claude/

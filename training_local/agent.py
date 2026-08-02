@@ -56,6 +56,10 @@ class DeepSeekPolicyInferenceModel:
         from vllm import LLM, SamplingParams
         from transformers import AutoTokenizer
 
+        # Apply runtime patches (MHC tilelang fallback for Py3.12).
+        from training_local._vllm_runtime_patches import apply_all
+        apply_all()
+
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.config.resolved_tokenizer_path,
             trust_remote_code=True,

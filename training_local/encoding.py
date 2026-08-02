@@ -109,6 +109,29 @@ class DeepSeekEncoding:
         Returns dict with keys: role, content, reasoning_content, tool_calls.
         tool_calls are in OpenAI format: {id, type: "function", function: {name, arguments}}.
         """
+        # vLLM strips the EOS token from `RequestOutput.text` even when
+        # finish_reason='stop' (EOS was generated). The DSv4 parser strictly
+        # requires the EOS sentinel at the end of the text. Re-attach it when
+        # missing so callers can pass the stripped text directly.
+        eos = "<｜end▁of▁sentence｜>"
+        if not text.endswith(eos):
+            text = text + eos
+
+        # The DSv4 parser treats the FIRST </think> as the end of the thinking
+        # block and rejects any subsequent </think> as an unexpected special
+        # token. With high/max reasoning_effort the model sometimes emits two
+        # or three </think> tokens (e.g. when it briefly answers, then reopens
+        # thinking). Collapse extra </think> occurrences in the post-thinking
+        # region so we can recover the structured content instead of failing.
+        if self.thinking_mode == "thinking":
+            think_end = "</think>"
+            first = text.find(think_end)
+            if first != -1:
+                split = first + len(think_end)
+                head = text[:split]
+                tail = text[split:].replace(think_end, "")
+                text = head + tail
+
         return self._mod.parse_message_from_completion_text(
             text, thinking_mode=self.thinking_mode
         )

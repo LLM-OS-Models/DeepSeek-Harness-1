@@ -30,12 +30,15 @@ H200 ×8 대상.
 git clone <this-repo> harness-1
 cd harness-1
 
-# Base harness 의존성 (Python 3.12, torch 2.11, NCCL 2.29.7 고정)
+# Base harness 의존성 (Python 3.12, torch 2.11.0+cu128 고정).
+# pyproject.toml의 [tool.uv.sources]가 PyTorch cu128 index에서 당겨옴.
+# driver 570/CUDA 12.9 호스트에서는 cu130 wheel이 kernel op에서 죽으므로
+# 반드시 cu128 stack을 써야 한다.
 uv sync
 
 # RL extras. 두 파일:
-#   requirements.rl.txt          — verl, vllm, deepspeed, ray (--no-deps로
-#                                  torch 다운그레이드 방지)
+#   requirements.rl.txt          — verl, vllm(GitHub cu129 wheel), deepspeed,
+#                                  ray (--no-deps로 torch 다운그레이드 방지)
 #   requirements.rl.runtime.txt  — --no-deps가 건너뛰는 runtime deps
 uv pip install --no-deps -r requirements.rl.txt
 uv pip install -r requirements.rl.runtime.txt
@@ -48,6 +51,10 @@ unset PYTHONPATH && uv run python -c "
 import torch, verl, vllm, deepspeed, ray, peft, trl
 print('torch', torch.__version__, 'verl', verl.__version__,
       'vllm', vllm.__version__)
+# torch.cuda.is_available()만 True여선 부족하다 — 실제 kernel op이 돌아야 검증.
+x = torch.zeros(8, device='cuda:0')
+assert (x+1).sum().item() == 8
+print('cuda kernel ok')
 "
 ```
 

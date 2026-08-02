@@ -40,21 +40,30 @@ multi-turn 검색 에피소드 위에서 GRPO 강화학습으로 학습한다. �
 
 ### 1. 환경
 
-Python 3.12 필요 (`.python-version` 파일이 pin; torch 2.11은 Python 3.12 ABI와
-NCCL 2.29 기반으로 빌드돼 있어 3.11에서는 동작하지 않는다). base sync는 harness 의존성과
-함께 `torch==2.11.0`, `torchvision==0.26.0`, `nvidia-nccl-cu12==2.29.7`을 pin한다.
-RL extras는 별도 두 개의 requirements 파일로 관리한다 — verl과 vllm이 base deps와
-torch/torchvision/numpy/transformers 메이저 버전을 서로 안 맞춰서 `uv lock`이
-한꺼번에 풀지 못하기 때문이다.
+Python 3.12 필요 (`.python-version` 파일이 pin; torch 2.11은 Python 3.12 ABI로 빌드돼
+있어 3.11에서는 동작하지 않는다). base sync는 harness 의존성과 함께
+`torch==2.11.0+cu128`, `torchvision==0.26.0+cu128`을 pin한다 (`[tool.uv.sources]`가
+PyTorch cu128 index에서 당겨옴). **중요:** driver 570/CUDA 12.9 호스트에서는 cu130
+wheel이 첫 kernel op에서 죜 수 있으므로 반드시 cu128 stack을 써야 한다. NCCL 2.28.9는
+torch+cu128 의존성으로 자동으로 따라온다.
+
+RL extras는 별도 두 개의 requirements 파일로 관리한다 — vLLM이 CUDA-specific wheel을
+배포하는데, PyPI 기본 wheel(0.25.0)은 cu130 빌드라 같은 이유로 동작하지 않는다.
+`requirements.rl.txt`가 GitHub release의 cu129 wheel URL을 직접 가리킨다.
 
 ```bash
-uv sync                                                    # base (Python 3.12)
-uv pip install --no-deps -r requirements.rl.txt           # verl, vllm, deepspeed, ray
+uv sync                                                    # base (Python 3.12, cu128 torch)
+uv pip install --no-deps -r requirements.rl.txt           # verl, vllm cu129, deepspeed, ray
 uv pip install -r requirements.rl.runtime.txt             # 위 패키지들의 runtime deps
 ```
 
 Python 3.12가 없다면 `uv python install 3.12` 후 `uv venv --python 3.12`.
 `.python-version` 파일이 `uv run`에 대해 이 버전을 고정한다.
+
+**호스트 `PYTHONPATH` 주의:** 공용 머신 등에서 `PYTHONPATH`가 `~/.local/lib/...`
+를 가리키고 있으면 venv torch를 shadowing한다. `launch_rl.sh`/`launch_sft.sh`/
+`validate_rollout.sh`는 자동으로 `unset PYTHONPATH`하지만, 직접 `uv run`을 호출할
+때는 `env -u PYTHONPATH uv run ...` 형태로 실행해야 한다.
 
 ### 2. 베이스 모델 다운로드
 
@@ -106,6 +115,33 @@ uv run python -m training_local.smoke_test
 다섯 가지를 검사한다: `training_local` 모듈 전체 import, config 기본값, 모델
 스냅샷에서 `encoding_dsv4.py` 동적 로드, NDCG + GRPO advantage 수학, `QueryRecord` /
 `EnvState` 생성 가능성. 전부 통과해야 하며, 하나라도 실패하면 non-zero로 종료한다.
+
+### 4b. rollout 검증 (GPU 2대 필요, 실제 모델 로드)
+
+smoke test가 지나면 실제 모델이 2대 GPU에서 로드되는지 확인한다. 검색 백엔드나
+보상 신호 없이 최소 루프만 검사한다:
+
+```bash
+bash training_local/validate_rollout.sh
+# 또는 직접 GPU 지정: CUDA_VISIBLE_DEVICES=0,1 bash training_local/validate_rollout.sh
+```
+
+4가지를 검사한다: (1) `encoding_dsv4` 모듈 로드 + 프롬프트 렌더 (2) vLLM TP=2 +
+FP8 + DSpark 7-token speculative 시작 (3) 샘플링 1회 (4) `parse_completion`이
+DSML tool call 포맷을 잘라낸다. 약 4분(모델 로드) + 수 초(샘플링)가 걸린다.
+
+### 4c. multi-turn rollout 검증 (GPU 2대 필요)
+
+단일 턴 검증이 지나면, RL trainer가 실제로 구동할 multi-turn 루프를 검사한다:
+
+```bash
+bash training_local/validate_multiturn.sh
+```
+
+system + user + tools 프롬프트에서 출발해 (1) turn 1의 sample → parse → tool_call
+추출, (2) tool_result 메시지를 append한 turn 2의 sample → 최종 답 추출까지 확인한다.
+`tool_call_id` 가 인코딩/디코딩을 무사히 통과하는지, 다중 턴에서 프롬프트 길이가
+`max_model_len` 안에 들어가는지를 잡는다.
 
 ### 5. SFT warm-start (선택이지만 권장)
 
