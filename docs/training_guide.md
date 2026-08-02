@@ -1,13 +1,24 @@
 # 학습 가이드 — Harness-1 Local
 
 DeepSeek-V4-Flash-0731 검색 에이전트를 LoRA RL로 학습시키는 end-to-end 레시피.
-H200 ×8 대상.
+H200 ×8 (권장) 또는 H100 ×8 (가능).
 
 ## 사전 요구사항
 
 ### 하드웨어
-- 8× NVIDIA H200 (개당 141 GB), tensor parallel용 NVLink
+
+두 가지 구성이 지원된다:
+
+| 구성 | HBM (카드당) | max_model_len | rollover TP | 비고 |
+|---|---|---|---|---|
+| H200 ×8 | 141 GB | 131072 | 4 또는 8 | 긴 컨텍스트, 큰 batch. 권장. |
+| H100 ×8 | 80 GB | 32768–65536 | 8 | KV cache 빠듯. max_model_len 축소 필수. |
+
+공통 요구사항:
+- NVLink 기반 tensor parallel (PCIe 토폴로지는 TP=2까지만 안정)
 - 체크포인트 + SFT 데이터 + 모델 캐시용 디스크 ~1 TB
+- CUDA 12.8+ driver (driver ≥ 570.x)
+- 모델 가중치 ~157 GB (FP8+FP4)
 
 ### 소프트웨어
 - CUDA 12.8+ (NCCL 2.29.7+ 필요, torch 2.11이 요구)
@@ -349,13 +360,69 @@ ROLLOUT_TEMPERATURE=1.2
 ROLLOUT_TOP_P=0.98
 ```
 
-## 비용 추정 (8× H200)
+## 비용 추정
 
-- **전력:** ~5 kW × 24h = 하루 ~120 kWh
-- **실행 시간:** SEC 3 epoch에 ~3-7일 (3.5K 쿼리 × 8 group × 3 epoch)
-- **체크포인트:** 50개 LoRA 어댑터 × ~50 MB = 2.5 GB
-- **최종 병합 모델:** ~157 GB
-- **wandb 저장소:** run당 ~100 MB
+### 학습 시간 (SEC 3 epoch, GROUP_SIZE=8)
+
+계산 근거: 3,500 queries × 8 group × 3 epoch = 84K episodes. 평균 64 turns/episode
+× 약 2K tokens/turn = 약 10.7B tokens 생성 필요.
+
+| 구성 | 롤아웃 속도 (추정) | 순 학습 시간 | 평가 포함 | 비고 |
+|---|---|---|---|---|
+| **H200 ×8** | ~35K–45K tok/s (FP8 + DSpark 7) | 70–90시간 | **3–4일** | max_model_len=131K |
+| **H100 ×8** | ~25K–32K tok/s (대역폭 70%) | 95–120시간 | **5–6일** | max_model_len=32K–65K |
+
+이 추정은 평균 episode 길이 64 turn을 가정한 것이다. Sid-1 길이 스케줄링
+(`MAX_TURNS_START=32 → MAX_TURNS_END=128`)을 따르므로, 초반은 짧고 후반은 길다.
+실제 쿼리 난이도에 따라 ±50% 편차가 날 수 있다.
+
+**완료 시점 확인:** wandb의 `reward/ndcg`가 step 200 이후 안정화되고,
+`metrics/format_pass_rate`가 0.95 이상을 유지하면 수렴으로 본다. 3 epoch
+전에 수렴하면 `MAX_STEPS`로 조기 종료한다.
+
+### 디스크 / 전력
+
+| 항목 | H200 ×8 | H100 ×8 |
+|---|---|---|
+| 전력 (700W TDP × 8) | ~5.6 kW | ~5.6 kW |
+| 일일 전력 | ~135 kWh | ~135 kWh |
+| 체크포인트 (LoRA 50개) | 2.5 GB | 2.5 GB |
+| 최종 병합 모델 | ~157 GB | ~157 GB |
+| 모델 캐시 (HF hub) | ~157 GB | ~157 GB |
+| wandb 저장소 (run당) | ~100 MB | ~100 MB |
+
+## 예상 결과 / 기대 metric
+
+학습이 잘 진행되면 wandb에서 다음 변화가 관찰된다. 이것은 Sid-1 / Harness-1
+논문의 baseline 범위이지, 보장된 수치가 아니다.
+
+### 정량 metric
+
+| metric | step 0 | 학습 후 기대치 | 의미 |
+|---|---|---|---|
+| `reward/recall` | 0.05–0.15 | 0.45–0.65 | gold 문서를 큐레이션 셋에 담는 비율 |
+| `reward/ndcg` | 0.10–0.20 | 0.50–0.70 | 랭킹 품질 (이른 위치에 정답) |
+| `metrics/n_turns` | 80–128 | 30–50 | 에피소드당 평균 턴 (효율성) |
+| `metrics/format_pass_rate` | 0.70–0.85 | >0.95 | DSML tool_call 포맷 준수율 |
+| `metrics/fa_hit_rate` | 0.10 | 0.40–0.55 | 최종 답안이 gold를 포함 |
+| 도구 다양성 (distinct / 6) | 0.2–0.4 | 0.7–1.0 | 반복 행동 (동일 검색) 방지 |
+
+### 정성적 변화
+
+- **검색 쿼리 구체화:** "ACME revenue" → "ACME Corp FY2024 10-K revenue billion"
+- **큐레이션 선택성:** 검색 결과 전체 dump → top-K relevant만 선택
+- **자발적 종료:** max_turn 도달 전 증거 충분하면 stop 호출
+- **증거 인용:** 최종 답안이 큐레이션한 chunk ID를 참조 (환각 감소)
+
+### 문제 발생 징후와 대응
+
+| 징후 | 원인 | 대응 |
+|---|---|---|
+| `format_pass_rate` < 0.95 | group size 부족 | `GROUP_SIZE=16` |
+| `reward/recall` 정체 | exploration 부족 | `ROLLOUT_TEMPERATURE=1.2`, `MAX_TURNS_END=200` |
+| `n_turns` 안 줄음 | turn penalty 약함 | `TURN_PENALTY_MAX=0.05` |
+| `kl` 폭등 | 학습률 너무 높음 | `LEARNING_RATE=5e-6` (기본 1e-5) |
+| 도구 다양성 < 0.5 | reward hacking | `TOOL_DIVERSITY_BONUS=0.5` |
 
 ## 재현성
 

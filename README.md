@@ -1,6 +1,6 @@
 # Harness-1 Local
 
-**DeepSeek-V4-Flash-0731 (FP8) + LoRA 기반 로컬 RL 파이프라인. H200 ×8 대상. Tinker 없이 동작.**
+**DeepSeek-V4-Flash-0731 (FP8) + LoRA 기반 로컬 RL 파이프라인. H200 ×8 (권장) 또는 H100 ×8 (가능). Tinker 없이 동작.**
 
 원본 [Harness-1](https://arxiv.org/abs/2606.02373) 의 fork로, 호스팅 Tinker 학습 서비스를
 **verl**(주 백엔드) 또는 **TRL GRPOTrainer**(폴백) 기반 로컬 RL 스택으로 교체했다.
@@ -162,6 +162,56 @@ H200에서 동작함을 확인한다. RL 본학습은 검색 백엔드(Chroma) �
 필요해서 본 문서 범위 밖이다. vLLM 시작 시간의 대부분(380초+)은 48개 FP8
 safetensors shard 로드와 51개 PIECEWISE + 48개 FULL CUDA graph capture에
 소모된다.
+
+### 다른 PC에서 재현 (reproducibility)
+
+이 저장소는 처음부터 다른 워크스테이션에서도 그대로 동작하도록 설계됐다.
+추가로 설치해야 하는 것은 (1) 모델 가중치, (2) 검색 백엔드 코퍼스, (3) API
+자격증명뿐이다.
+
+**필수 환경 변수** (`.env.local`에서 세팅하거나 셸에서 export):
+
+```bash
+# 모델 캐시 위치 (기본 ~/.cache/huggingface). 다른 볼륨에 받았으면 변경.
+export HF_HOME=/path/to/hf/cache
+
+# 모델 경로. 기본은 HF hub id. 로컬 snapshot 절대경로도 받음.
+# encoding.py가 자동으로 모델 config + encoding_dsv4.py를 찾는다.
+export HARNESS1_MODEL_PATH=deepseek-ai/DeepSeek-V4-Flash-0731
+# 또는: export HARNESS1_MODEL_PATH=/data/models/dsv4-flash-0731
+
+# 검색 백엔드
+export OPENAI_API_KEY=sk-...           # 임베딩 (text-embedding-3-large)
+export CHROMA_API_KEY=...              # Chroma Cloud
+export CHROMA_DATABASE=...             # 컬렉션 이름
+
+# GPU 토폴로지 (H100 80GB에서 특히 중요)
+export ROLLOUT_TP_SIZE=8               # H100은 8, H200은 4 또는 8
+export ROLLOUT_MAX_MODEL_LEN=32768     # H100은 32K–65K, H200은 128K
+export ROLLOUT_GPU_MEM_UTIL=0.92       # 카드당 여유 보고 조정
+```
+
+**설치 단계 (공용 머신에서 처음 실행 시):**
+
+```bash
+git clone https://github.com/LLM-OS-Models/DeepSeek-Harness-1.git harness-1
+cd harness-1
+
+uv python install 3.12                  # Python 3.12가 없으면
+uv sync                                 # base 의존성 + cu128 torch
+uv pip install --no-deps -r requirements.rl.txt      # vllm cu129 wheel
+uv pip install -r requirements.rl.runtime.txt        # runtime deps
+
+hf download deepseek-ai/DeepSeek-V4-Flash-0731        # ~157 GB
+
+# 호스트 PYTHONPATH가 venv를 가리지 않도록 주의. 모든 launch_*.sh /
+# validate_*.sh가 자동 unset. 직접 uv run 시에는 env -u PYTHONPATH uv run ...
+cp .env.example .env.local              # 자격증명 채우기
+```
+
+이후에는 `bash training_local/launch_rl.sh` 한 줄로 전체 파이프라인이 실행된다.
+`patch_vllm.py`가 vLLM 0.25 호환성 패치를 자동 적용하고, 인코딩·검색·보상·학습
+루프가 차례로 시작된다.
 
 ### 5. SFT warm-start (선택이지만 권장)
 
@@ -403,15 +453,56 @@ tool call 경계 토큰에서 log-prob 붕괴를 일으키므로 쓰지 않는�
 
 ## 하드웨어 타깃
 
-- **학습:** 8× NVIDIA H200 (개당 141 GB HBM3e, 합산 ~1.15 TB)
-- **메모리 예산:** 284B FP8 ≈ 157 GB 가중치 + LoRA + activation + KV cache가
-  1.15 TB 안에 충분히 들어옴
-- **롤아웃 TP size:** 4 (H200 쌍 단위). `enable_expert_parallel=True`
-- **KV cache dtype:** FP8
-- **speculative decoding:** DSpark, 7 draft token
+### 두 가지 검증된 구성
 
-다른 GPU 토폴로지에서는 `ROLLOUT_TP_SIZE`, `ROLLOUT_GPU_MEM_UTIL`,
-`ROLLOUT_MAX_MODEL_LEN`을 조정한다.
+| 구성 | HBM (카드당) | 합산 | max_model_len 권장 | rollover TP size | 비고 |
+|---|---|---|---|---|---|
+| **H200 ×8** (권장) | 141 GB | 1.13 TB | 131072 | 4 또는 8 | 여유 있게 긴 컨텍스트 + 큰 batch |
+| **H100 ×8** (가능) | 80 GB | 640 GB | 32768–65536 | 8 | KV cache와 batch가 빠듯. max_model_len 축소 필수 |
+
+DeepSeek-V4-Flash-0731 (284B MoE, FP8)은 가중치만 약 **157 GB**. TP=8로 나누면
+카드당 약 20 GB가 가중치로 들어가고, 나머지를 KV cache·activation·optimizer에
+쓴다. H100 80GB는 131K 컨텍스트까지는 무리지만 32K–65K면 충분히 학습 가능하다.
+
+### 공통 설정
+
+- **가중치 정밀도:** FP8 main + FP4 experts (vLLM이 model config에서 자동 인식)
+- **KV cache dtype:** FP8 (`fp8`)
+- **롤아웃 TP size:** 4 (H200 쌍), 8 (H100 80GB 또는 H200 여유 확보 시)
+- **expert parallel:** `enable_expert_parallel=True` 항상
+- **speculative decoding:** DSpark, 7 draft token
+- **NCCL:** ≥ 2.28.9 (torch+cu128 의존성으로 자동)
+
+다른 토폴로지에서는 `ROLLOUT_TP_SIZE`, `ROLLOUT_GPU_MEM_UTIL`,
+`ROLLOUT_MAX_MODEL_LEN`을 조정한다. H100 80GB에서는 특히 `ROLLOUT_MAX_MODEL_LEN`
+기본값 131072를 32768 또는 65536으로 줄여야 OOM을 피한다.
+
+## 예상 결과 / 기대 효과
+
+### 정량적 metric (Sid-1 / Harness-1 baseline 대비)
+
+학습이 잘 진행되면 wandb에 다음 패턴이 나타난다:
+
+| metric | 초기 (step 0) | 학습 후 기대치 | 출처 |
+|---|---|---|---|
+| `reward/recall` (큐레이션 set) | 0.05–0.15 | 0.45–0.65 | Harness-1 |
+| `reward/ndcg` | 0.10–0.20 | 0.50–0.70 | Sid-1 |
+| `metrics/n_turns` | 80–128 (ramp 종료 시) | 30–50 | 효율성 학습 |
+| `metrics/format_pass_rate` | 0.70–0.85 | >0.95 | Sid-1 권장 |
+| `metrics/fa_hit_rate` (최종 답안) | 0.10 | 0.40–0.55 | Harness-1 |
+| 도구 다양성 (distinct / 6) | 0.2–0.4 | 0.7–1.0 | Harness-1 |
+
+**`metrics/format_pass_rate`가 0.95 아래로 떨어지면** `GROUP_SIZE`를 8→16으로
+늘린다 (Sid-1 권장). **`reward/recall`이 100 step 이상 정체되면** 학습률을 절반으로
+줘이거나 `MAX_TURNS_END`를 늘려 탐험 예산을 확대한다.
+
+### 정성적 기대
+
+- 검색 쿼리가 구체화된다 ("ACME revenue" → "ACME Corp FY2024 10-K revenue
+  billion")
+- 검색 결과에서 가장 관련성 높은 chunk를 골라 큐레이션한다 (top-1 dump 안 함)
+- 증거가 충분하면 자발적으로 탐색을 중단한다 (턴 페널티 학습 효과)
+- 최종 답안이 큐레이션한 문서를 인용한다 (Hallucination 감소)
 
 ---
 

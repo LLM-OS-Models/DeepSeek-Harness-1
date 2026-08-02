@@ -212,19 +212,41 @@ TRL의 `GRPOTrainer`는 multi-turn stateful 환경을 네이티브로 지원하�
 H200 ×8에서는 50 step마다 저장. 어댑터만 저장하는 건 저렴; 병합은 학습 종료 시
 (또는 평가 시)만.
 
-## H200 ×8에서의 메모리 예산
+## 메모리 예산
+
+### H200 ×8 (권장)
 
 ```
-8 × H200 = 1,141 GB 총 HBM3e
+8 × H200 = 1,141 GB 총 HBM3e (카드당 143 GB)
 
-카드당 할당 (각 143 GB):
-  - 모델 가중치 (FP8):    ~20 GB  (157 GB / 8)
-  - LoRA 어댑터 (BF16):   <1 GB
-  - Optimizer state (Adam): ~3 GB  (2× LoRA 파라미터 × 4 bytes)
-  - Activation:            ~30 GB (gradient checkpointing 켠 상태)
-  - KV cache (FP8):         ~80 GB (긴 컨텍스트)
-                            ─────
-                            ~134 GB ← 143 GB 안에 들어옴
+카드당 할당:
+  - 모델 가중치 (FP8):     ~20 GB  (157 GB / 8)
+  - LoRA 어댑터 (BF16):    <1 GB
+  - Optimizer (Adam, 2×):  ~3 GB
+  - Activation:            ~30 GB (gradient checkpointing)
+  - KV cache (FP8):        ~80 GB (max_model_len=131072)
+                           ─────
+                           ~134 GB ← 143 GB 안에 들어옴
 ```
 
-여유가 더 필요하면 `ROLLOUT_GPU_MEM_UTIL`을 조정한다.
+### H100 ×8 (가능)
+
+```
+8 × H100 = 640 GB 총 HBM3 (카드당 80 GB)
+
+카드당 할당 (max_model_len=32768 기준):
+  - 모델 가중치 (FP8):     ~20 GB  (157 GB / 8)
+  - LoRA 어댑터 (BF16):    <1 GB
+  - Optimizer (Adam, 2×):  ~3 GB
+  - Activation:            ~20 GB (batch 축소)
+  - KV cache (FP8):        ~30 GB (max_model_len 32K로 축소)
+                           ─────
+                           ~74 GB ← 80 GB 안에 들어옴 (TP=8 필수)
+```
+
+H100 80GB에서는 32K context까지만 안전하다. 65K로 올리려면 batch_size를 절반으로
+줄이거나 `ROLLOUT_GPU_MEM_UTIL=0.95`로 타이트하게. H200처럼 131K를 쓰려면 H100은
+불가능하다 — 가중치 20 GB + KV 80 GB + activation 30 GB = 130 GB로 80 GB를
+초과한다.
+
+여유가 더 필요하면 `ROLLOUT_GPU_MEM_UTIL` 또는 `ROLLOUT_MAX_MODEL_LEN`을 조정.

@@ -230,6 +230,29 @@ multi-turn 루프를 `validate_multiturn.sh`로 검증했다. 두 검증 모두 
 4. assistant turn의 `tool_calls` + 이후 `tool` role 메시지가 인코딩을 무사히 통과
 5. 다중 턴에서 프롬프트 길이가 `max_model_len=8192` 안에 들어감
 
+### 하드웨어 호환성 / 학습 시간 / 재현성 문서화 (2026-08-02)
+
+롤아웃 검증 이후, RL 본학습 투입 전에 아래를 정리했다.
+
+- **H100 ×8 지원 명시.** 284B FP8 MoE 는 H100 80GB ×8 (640 GB 총합)에서도
+  동작하지만, 카드당 80 GB 예산이 빡빡해서 `max_model_len`을 32K–65K로 축소하고
+  `ROLLOUT_TP_SIZE=8`을 써야 한다. H200 ×8 (1.13 TB)는 131K 컨텍스트 그대로
+  가능. 두 구성 모두 `enable_expert_parallel=True`, FP8 KV cache, DSpark 7-token
+  speculative.
+- **학습 시간 추정치 추가.** SEC 3.5K queries × 8 group × 3 epoch = 84K episodes,
+  약 10.7B tokens 생성 기준. H200 ×8이 약 3–4일 (순 학습 70–90시간), H100 ×8이
+  약 5–6일 (대역폭 70%로 인한 롤아웃 속도 저하). 실제 episode 길이에 따라
+  ±50% 편차 가능.
+- **예상 metric 명시.** Sid-1 / Harness-1 baseline 대비 `reward/recall`
+  0.05–0.15 → 0.45–0.65, `reward/ndcg` 0.10–0.20 → 0.50–0.70, format pass rate
+  >0.95 등. 문제 징후와 대응 테이블도 같이 정리 (`GROUP_SIZE` 증가, KL 폭등 시
+  학습률 감소 등).
+- **다른 PC 재현성 강화.** `.env.example`을 전면 재작성: 필수 / 모델 경로 /
+  GPU 토폴로지 / 옵션 / 로깅 섹션으로 분리. `HARNESS1_MODEL_PATH` (로컬 snapshot
+  경로도 받음), `HF_HOME` (캐시 위치), `ROLLOUT_TP_SIZE` / `ROLLOUT_MAX_MODEL_LEN`
+  (H100 vs H200 토폴로지) override 가이드 추가. README "다른 PC에서 재현" 섹션
+  신설. Tinker 제거에 따라 `TINKER_API_KEY` 는 .env.example에서도 삭제.
+
 
 
 
