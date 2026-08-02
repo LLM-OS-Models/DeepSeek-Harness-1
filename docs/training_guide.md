@@ -97,6 +97,49 @@ unset PYTHONPATH && uv run python -m training_local.smoke_test
 
 기대 결과: 5개 테스트 전부 통과 (import, config, encoding, reward, 데이터 구조).
 
+### 4b. 단일 턴 롤아웃 검증 (GPU 2대)
+
+smoke test가 지난 후, 실제 모델 로딩과 DSv4 인코딩/파싱 루프를 2대 GPU에서
+검증한다. 검색 백엔드나 보상은 필요 없다 — 최소 루프만:
+
+```bash
+bash training_local/validate_rollout.sh
+# 기본값: CUDA_VISIBLE_DEVICES=6,7, ROLLOUT_MAX_MODEL_LEN=8192
+# 다른 GPU: CUDA_VISIBLE_DEVICES=0,1 bash training_local/validate_rollout.sh
+```
+
+4단계를 검사한다:
+1. `encoding_dsv4` 모듈 동적 로드 + 시스템/유저 메시지 렌더
+2. vLLM TP=2, FP8 KV cache, DSpark 7-token speculative 시작
+3. 1회 샘플링 (temperature=0.7, max_tokens=512)
+4. `parse_completion` 이 content/reasoning/tool_calls 구조로 변환
+
+H200 ×2 실측: vLLM 시작 ~450초(모델 로드 + DeepGEMM warmup + 51 PIECEWISE +
+48 FULL + 48 dspark CUDA graph capture) + 샘플링 수 초.
+
+실패 시: `training_local/patch_vllm.py`가 자동 호출됐는지 로그에서 확인. 스크립트
+자체가 `uv run --no-sync python -m training_local.patch_vllm || true`를 먼저
+실행하지만, venv를 재설치했다면 수동으로 한 번 더 호출해 본다.
+
+### 4c. multi-turn 롤아웃 검증 (GPU 2대)
+
+단일 턴 검증이 지난 후, RL trainer가 실제로 구동할 multi-turn 루프를 검증한다:
+
+```bash
+bash training_local/validate_multiturn.sh
+```
+
+3단계를 검사한다:
+1. vLLM 시작 (4b 와 동일)
+2. Turn 1: `web_search` tool을 포함한 system+user 프롬프트에서 sample →
+   parse → `tool_calls`가 `web_search` 로 잘 뽑히는지
+3. Turn 2: tool_call_id 에 가짜 tool_result 를 append 후 re-encode →
+   sample → 최종 답안이 tool_result를 참조하는지
+
+`tool_call_id` 가 인코딩/디코딩을 무사히 통과하는지, multi-turn 프롬프트 길이가
+`max_model_len` 안에 들어가는지를 잡는다. H200 ×2 실측: vLLM 시작 ~450초 +
+2턴 샘플링 ~15초.
+
 ### 5. (옵션) SFT 궤적 생성
 
 ```bash
@@ -211,6 +254,23 @@ uv run python inference/evaluate_harness1_vllm.py \
 ```
 
 ## 자주 발생하는 문제
+
+### vLLM import 또는 worker init 실패 (NamespaceTool, ThrMma, fmax, tilelang)
+
+vLLM 0.25 wheel이 PyPI의 openai/cutlass-dsl/tilelang 버전과 충돌한다.
+`training_local/patch_vllm.py`가 자동으로 잡는다:
+
+```bash
+unset PYTHONPATH && uv run --no-sync python -m training_local.patch_vllm
+```
+
+이 스크립트는 5개 패치를 적용한다 (NamespaceTool alias, tilelang stub symlink,
+MHC forward_cuda 게이트, cute.ThrMma alias, nvvm.fmax 강제 new API). 자세한
+사유는 `docs/changelog.md` 와 `training_local/README.md` 의 "vLLM 호환성 패치"
+섹션. idempotent하므로 안전하게 재실행 가능.
+
+`launch_rl.sh`/`launch_sft.sh`/`validate_*.sh`는 모두 시작 전에 자동 호출한다.
+venv를 reinstall한 직후에만 수동으로 한 번 실행해 주면 된다.
 
 ### 롤아웃 중 "CUDA out of memory"
 

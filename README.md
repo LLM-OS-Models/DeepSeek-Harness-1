@@ -128,7 +128,10 @@ bash training_local/validate_rollout.sh
 
 4가지를 검사한다: (1) `encoding_dsv4` 모듈 로드 + 프롬프트 렌더 (2) vLLM TP=2 +
 FP8 + DSpark 7-token speculative 시작 (3) 샘플링 1회 (4) `parse_completion`이
-DSML tool call 포맷을 잘라낸다. 약 4분(모델 로드) + 수 초(샘플링)가 걸린다.
+DSML tool call 포맷을 잘라낸다.
+
+H200 ×2 (TP=2)에서의 실측: vLLM 시작 ~450초(모델 로드 + DeepGEMM warmup +
+CUDA graph capture) + 샘플링 수 초. 검증이 끝나면 자동으로 vLLM을 종료한다.
 
 ### 4c. multi-turn rollout 검증 (GPU 2대 필요)
 
@@ -141,7 +144,24 @@ bash training_local/validate_multiturn.sh
 system + user + tools 프롬프트에서 출발해 (1) turn 1의 sample → parse → tool_call
 추출, (2) tool_result 메시지를 append한 turn 2의 sample → 최종 답 추출까지 확인한다.
 `tool_call_id` 가 인코딩/디코딩을 무사히 통과하는지, 다중 턴에서 프롬프트 길이가
-`max_model_len` 안에 들어가는지를 잡는다.
+`max_model_len` 안에 들어가는지를 잡는다. H200 ×2에서 vLLM 시작 ~450초 + 2턴
+샘플링 ~15초.
+
+### 현재 검증 상태 (2026-08-02, H200 ×2 GPU 6,7)
+
+| 검증 | 상태 | 비고 |
+|---|---|---|
+| `smoke_test.py` (GPU 불필요) | PASS | import, config, encoding, reward, 데이터 구조 |
+| `validate_rollout.sh` (단일 턴) | PASS | vLLM 0.25.0+cu129, 451.2s init, 453 토큰 샘플 |
+| `validate_multiturn.sh` (multi-turn) | PASS | 453.6s init, web_search → tool_result → 최종 답 |
+| SFT warm-start (`launch_sft.sh`) | 미검증 | 검색 백엔드 설정 후 실행 필요 |
+| RL 학습 (`launch_rl.sh`) | 미검증 | 검색 백엔드 + SFT warm-start 후 실행 필요 |
+
+단일 턴과 multi-turn은 모델 로딩과 DSv4 인코딩/파싱 파이프라인 전체가 실제
+H200에서 동작함을 확인한다. RL 본학습은 검색 백엔드(Chroma) 설정이 추가로
+필요해서 본 문서 범위 밖이다. vLLM 시작 시간의 대부분(380초+)은 48개 FP8
+safetensors shard 로드와 51개 PIECEWISE + 48개 FULL CUDA graph capture에
+소모된다.
 
 ### 5. SFT warm-start (선택이지만 권장)
 

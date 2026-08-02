@@ -203,5 +203,33 @@
   매핑하는데, smoke test 검증 목적상 over-thinking보다 깔끔한 structured output가
   더 유용. `validate_rollout.sh`가 `REASONING_EFFORT` default를 `low`로.
 
+### Multi-turn 롤아웃 검증 (2026-08-02)
+
+단일 턴 검증(`validate_rollout.sh`)이 지난 후, RL trainer가 실제로 구동할
+multi-turn 루프를 `validate_multiturn.sh`로 검증했다. 두 검증 모두 GPU 6,7
+(H200 ×2)에서 동일 스택으로 통과.
+
+**단일 턴 (`validate_rollout.sh`)**
+- vLLM ready: 451.2s (모델 로드 + DeepGEMM warmup + CUDA graph capture)
+- 샘플링: 453 토큰 / 6.18s (`finish_reason=stop`)
+- `parse_completion`: content 224자, reasoning 1584자, tool_calls 0
+- 결과: ALL CHECKS PASSED
+
+**Multi-turn (`validate_multiturn.sh`)**
+- vLLM ready: 453.6s
+- Turn 1: system + user + `web_search` tool 정의 → 모델이 `web_search` tool_call
+  emit (`id=call_0`, `name=web_search`), `parse_completion`이 정상 추출
+- Turn 2: 가짜 `tool_result` 메시지를 append 후 re-encode → 모델이 tool 결과를
+  읽고 "$4.2 billion, up 12% YoY" 최종 답안 생성 (content 106자, tool_calls 0)
+- 결과: ALL CHECKS PASSED (multi-turn)
+
+이로써 아래가 실제 모델에서 검증됐다:
+1. `encode_messages` 가 system 메시지의 `tools` 필드를 인식해 tool 스키마를 렌더
+2. 모델이 DSML tool_call 포맷(`<｜DSML｜...＞`)을 정확히 emit
+3. `parse_completion` 이 tool_call을 OpenAI 포맷(`{id, function: {name, arguments}}`)으로 변환
+4. assistant turn의 `tool_calls` + 이후 `tool` role 메시지가 인코딩을 무사히 통과
+5. 다중 턴에서 프롬프트 길이가 `max_model_len=8192` 안에 들어감
+
+
 
 
